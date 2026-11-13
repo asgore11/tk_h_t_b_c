@@ -6,7 +6,6 @@
 <title>Báo cháy gia đình</title>
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
-  // Dự phòng nếu jsDelivr không tải được
   if (typeof mqtt === "undefined")
     document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"><\/script>');
 </script>
@@ -60,13 +59,17 @@
 </div>
 
 <script>
+// ---- Khớp với code Wokwi (ID = PHAMTIENLUC) ----
 const ID = "PHAMTIENLUC";
 const T = {
-  gas: ID + "/gas", temp: ID + "/temperature",
-  fanSet: ID + "/fan/set", pumpSet: ID + "/pump/set",
-  fanState: ID + "/fan/state", pumpState: ID + "/pump/state"
+  gas:       ID + "/gas",
+  temp:      ID + "/temperature",
+  fanSet:    ID + "/fan/set",
+  pumpSet:   ID + "/pump/set",
+  fanState:  ID + "/fan/state",
+  pumpState: ID + "/pump/state"
 };
-const GAS_TH = 40, TEMP_TH = 35;
+const GAS_TH = 40, TEMP_TH = 35;   // = GAS_THRESHOLD, TEMP_THRESHOLD trong code ESP32
 
 const $ = id => document.getElementById(id);
 function log(t){
@@ -81,7 +84,7 @@ if (typeof mqtt === "undefined"){
   throw new Error("mqtt lib missing");
 }
 
-// ---- Biểu đồ (không bắt buộc) ----
+// ---- Biểu đồ ----
 function makeChart(id, label, color){
   if (typeof Chart === "undefined") return null;
   return new Chart($(id), {
@@ -100,7 +103,7 @@ function push(ch, v){
   ch.update();
 }
 
-// ---- Trạng thái nút ----
+// ---- Trạng thái thật của quạt/bơm (do ESP32 publish) ----
 const state = { fan: "--", pump: "--" };
 function render(){
   $("btnFan").textContent  = "Quạt: " + state.fan;
@@ -127,11 +130,11 @@ client.on("error", e => { setStatus("❌ Lỗi MQTT: " + e.message); log("Lỗi:
 client.on("message", (topic, payload) => {
   const s = payload.toString().trim();
   log(topic + " = " + s);
-  setStatus("✅ Đang nhận dữ liệu từ ESP32");
 
   if (topic === T.gas){
     const v = parseFloat(s);
     if (isNaN(v)) return;
+    setStatus("✅ Đang nhận dữ liệu từ ESP32");
     $("gas").textContent = v.toFixed(1);
     $("gas").classList.toggle("danger", v > GAS_TH);
     push(gasChart, v);
@@ -148,10 +151,19 @@ client.on("message", (topic, payload) => {
   }
 });
 
-// ---- Nút điều khiển ----
-$("btnFan").onclick  = () => { client.publish(T.fanSet,  state.fan  === "ON" ? "OFF" : "ON"); log("Gửi fan/set"); };
-$("btnPump").onclick = () => { client.publish(T.pumpSet, state.pump === "ON" ? "OFF" : "ON"); log("Gửi pump/set"); };
-$("btnAuto").onclick = () => { client.publish(T.fanSet, "AUTO"); client.publish(T.pumpSet, "AUTO"); log("Gửi AUTO"); };
+// ---- Nút điều khiển: đảo trạng thái hiện tại (manual) ----
+$("btnFan").onclick = () => {
+  const cmd = state.fan === "ON" ? "OFF" : "ON";
+  client.publish(T.fanSet, cmd); log("Gửi " + T.fanSet + " = " + cmd);
+};
+$("btnPump").onclick = () => {
+  const cmd = state.pump === "ON" ? "OFF" : "ON";
+  client.publish(T.pumpSet, cmd); log("Gửi " + T.pumpSet + " = " + cmd);
+};
+$("btnAuto").onclick = () => {
+  client.publish(T.fanSet, "AUTO"); client.publish(T.pumpSet, "AUTO");
+  log("Gửi AUTO cho quạt và bơm");
+};
 </script>
 </body>
 </html>
