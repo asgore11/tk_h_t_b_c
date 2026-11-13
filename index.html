@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Báo cháy gia đình</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+  // Dự phòng nếu jsDelivr không tải được
+  if (typeof mqtt === "undefined")
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"><\/script>');
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   body{font-family:system-ui,sans-serif;background:#f4f5f7;margin:0;padding:16px;color:#222}
@@ -16,7 +21,8 @@
   .danger{color:#d32f2f}
   button{padding:10px 18px;border:0;border-radius:8px;font-size:15px;cursor:pointer;background:#ccc;margin-right:6px}
   button.on{background:#2e7d32;color:#fff}
-  .status{font-size:13px;margin-bottom:8px}
+  .status{font-size:14px;margin-bottom:8px}
+  #log{font:12px monospace;background:#111;color:#9f9;padding:8px;border-radius:8px;height:120px;overflow:auto;white-space:pre-wrap}
 </style>
 </head>
 <body>
@@ -39,91 +45,113 @@
   <div class="card"><canvas id="tempChart"></canvas></div>
 </div>
 
+<div class="row">
+  <div class="card">
+    <div class="label">Điều khiển thủ công</div><br>
+    <button id="btnFan">Quạt: --</button>
+    <button id="btnPump">Máy bơm: --</button>
+    <button id="btnAuto">Về chế độ tự động</button>
+  </div>
+</div>
+
 <div class="card">
-  <div class="label">Điều khiển thủ công</div><br>
-  <button id="btnFan">Quạt: --</button>
-  <button id="btnPump">Máy bơm: --</button>
-  <button id="btnAuto">Về chế độ tự động</button>
+  <div class="label">Nhật ký MQTT (tin nhận được từ Wokwi)</div>
+  <div id="log"></div>
 </div>
 
 <script>
 const ID = "PHAMTIENLUC";
 const T = {
-  gas:       ID + "/gas",
-  temp:      ID + "/temperature",
-  fanSet:    ID + "/fan/set",
-  pumpSet:   ID + "/pump/set",
-  fanState:  ID + "/fan/state",
-  pumpState: ID + "/pump/state"
+  gas: ID + "/gas", temp: ID + "/temperature",
+  fanSet: ID + "/fan/set", pumpSet: ID + "/pump/set",
+  fanState: ID + "/fan/state", pumpState: ID + "/pump/state"
 };
-const GAS_TH = 40, TEMP_TH = 35;   // trùng với ngưỡng trong code ESP32
+const GAS_TH = 40, TEMP_TH = 35;
 
+const $ = id => document.getElementById(id);
+function log(t){
+  const l = $("log");
+  l.textContent += new Date().toLocaleTimeString() + "  " + t + "\n";
+  l.scrollTop = l.scrollHeight;
+}
+function setStatus(t){ $("status").textContent = t; }
+
+if (typeof mqtt === "undefined"){
+  setStatus("❌ Không tải được thư viện MQTT. Kiểm tra kết nối Internet.");
+  throw new Error("mqtt lib missing");
+}
+
+// ---- Biểu đồ (không bắt buộc) ----
 function makeChart(id, label, color){
-  return new Chart(document.getElementById(id), {
+  if (typeof Chart === "undefined") return null;
+  return new Chart($(id), {
     type: "line",
     data: { labels: [], datasets: [{ label, data: [], borderColor: color, tension: .3, pointRadius: 0 }] },
     options: { animation: false, scales: { x: { display: false } } }
   });
 }
-const gasChart  = makeChart("gasChart",  "Khí gas (%)",     "#e65100");
-const tempChart = makeChart("tempChart", "Nhiệt độ (°C)",   "#1565c0");
-
+const gasChart  = makeChart("gasChart",  "Khí gas (%)",   "#e65100");
+const tempChart = makeChart("tempChart", "Nhiệt độ (°C)", "#1565c0");
 function push(ch, v){
+  if (!ch) return;
   ch.data.labels.push(new Date().toLocaleTimeString());
   ch.data.datasets[0].data.push(v);
   if (ch.data.labels.length > 30){ ch.data.labels.shift(); ch.data.datasets[0].data.shift(); }
   ch.update();
 }
 
+// ---- Trạng thái nút ----
 const state = { fan: "--", pump: "--" };
 function render(){
-  const f = document.getElementById("btnFan"), p = document.getElementById("btnPump");
-  f.textContent = "Quạt: " + state.fan;       f.classList.toggle("on", state.fan === "ON");
-  p.textContent = "Máy bơm: " + state.pump;   p.classList.toggle("on", state.pump === "ON");
+  $("btnFan").textContent  = "Quạt: " + state.fan;
+  $("btnPump").textContent = "Máy bơm: " + state.pump;
+  $("btnFan").classList.toggle("on",  state.fan === "ON");
+  $("btnPump").classList.toggle("on", state.pump === "ON");
 }
 
-const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt");
+// ---- MQTT ----
+const client = mqtt.connect("wss://broker.hivemq.com:8884/mqtt", {
+  clientId: "web-" + Math.random().toString(16).slice(2, 10),
+  reconnectPeriod: 3000,
+  keepalive: 30
+});
 
 client.on("connect", () => {
-  document.getElementById("status").textContent = "✅ Đã kết nối MQTT";
-  client.subscribe([T.gas, T.temp, T.fanState, T.pumpState]);
+  setStatus("✅ Đã kết nối broker. Đang chờ dữ liệu từ ESP32 (Wokwi cần đang chạy)...");
+  client.subscribe(ID + "/#", err => log(err ? "Subscribe lỗi: " + err.message : "Đã đăng ký " + ID + "/#"));
 });
-client.on("error", e => {
-  document.getElementById("status").textContent = "❌ Lỗi MQTT: " + e.message;
-});
+client.on("reconnect", () => setStatus("🔄 Đang kết nối lại..."));
+client.on("offline",   () => setStatus("⚠️ Mất kết nối broker"));
+client.on("error", e => { setStatus("❌ Lỗi MQTT: " + e.message); log("Lỗi: " + e.message); });
 
-client.on("message", (topic, msg) => {
-  const s = msg.toString().trim();
+client.on("message", (topic, payload) => {
+  const s = payload.toString().trim();
+  log(topic + " = " + s);
+  setStatus("✅ Đang nhận dữ liệu từ ESP32");
+
   if (topic === T.gas){
     const v = parseFloat(s);
-    const el = document.getElementById("gas");
-    el.textContent = v.toFixed(1);
-    el.classList.toggle("danger", v > GAS_TH);
+    if (isNaN(v)) return;
+    $("gas").textContent = v.toFixed(1);
+    $("gas").classList.toggle("danger", v > GAS_TH);
     push(gasChart, v);
   } else if (topic === T.temp){
     const v = parseFloat(s);
-    const el = document.getElementById("temp");
-    el.textContent = v.toFixed(1);
-    el.classList.toggle("danger", v > TEMP_TH);
+    if (isNaN(v)) return;
+    $("temp").textContent = v.toFixed(1);
+    $("temp").classList.toggle("danger", v > TEMP_TH);
     push(tempChart, v);
   } else if (topic === T.fanState){
-    state.fan = s; render();
+    state.fan = s.toUpperCase(); render();
   } else if (topic === T.pumpState){
-    state.pump = s; render();
+    state.pump = s.toUpperCase(); render();
   }
 });
 
-// Bấm nút: đảo trạng thái hiện tại (ON <-> OFF), chế độ manual
-document.getElementById("btnFan").onclick  = () =>
-  client.publish(T.fanSet,  state.fan  === "ON" ? "OFF" : "ON");
-document.getElementById("btnPump").onclick = () =>
-  client.publish(T.pumpSet, state.pump === "ON" ? "OFF" : "ON");
-
-// Trả về chế độ tự động
-document.getElementById("btnAuto").onclick = () => {
-  client.publish(T.fanSet,  "AUTO");
-  client.publish(T.pumpSet, "AUTO");
-};
+// ---- Nút điều khiển ----
+$("btnFan").onclick  = () => { client.publish(T.fanSet,  state.fan  === "ON" ? "OFF" : "ON"); log("Gửi fan/set"); };
+$("btnPump").onclick = () => { client.publish(T.pumpSet, state.pump === "ON" ? "OFF" : "ON"); log("Gửi pump/set"); };
+$("btnAuto").onclick = () => { client.publish(T.fanSet, "AUTO"); client.publish(T.pumpSet, "AUTO"); log("Gửi AUTO"); };
 </script>
 </body>
 </html>
